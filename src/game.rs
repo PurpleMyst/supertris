@@ -250,38 +250,7 @@ impl OuterBoard {
             return;
         }
 
-        for row in 0..3 {
-            if let Some(player) = self.boards[row][0].winner {
-                if self.boards[row][1].winner == Some(player)
-                    && self.boards[row][2].winner == Some(player)
-                {
-                    self.overall_winner = Some(player);
-                    return;
-                }
-            }
-        }
-
-        for col in 0..3 {
-            if let Some(player) = self.boards[0][col].winner {
-                if self.boards[1][col].winner == Some(player)
-                    && self.boards[2][col].winner == Some(player)
-                {
-                    self.overall_winner = Some(player);
-                    return;
-                }
-            }
-        }
-
-        if let Some(player) = self.boards[1][1].winner {
-            if (self.boards[0][0].winner == Some(player)
-                && self.boards[2][2].winner == Some(player))
-                || (self.boards[0][2].winner == Some(player)
-                    && self.boards[2][0].winner == Some(player))
-            {
-                self.overall_winner = Some(player);
-                return;
-            }
-        }
+        self.overall_winner = self.meta_board().winner;
     }
 
     pub fn possible_moves(&self, player: Mark) -> Vec<Move> {
@@ -341,7 +310,9 @@ impl OuterBoard {
                     let mut best_eval = i32::MIN;
 
                     for r#move in node.possible_moves(COMPUTER_MARK) {
-                        let Some(child) = node.make_move(r#move) else { continue };
+                        let Some(child) = node.make_move(r#move) else {
+                            continue;
+                        };
                         let eval = self.search(&child, depth - 1, !maximizing, alpha, beta);
                         best_eval = best_eval.max(eval);
                         alpha = alpha.max(eval);
@@ -354,7 +325,9 @@ impl OuterBoard {
                 } else {
                     let mut best_eval = i32::MAX;
                     for r#move in node.possible_moves(HUMAN_MARK) {
-                        let Some(child) = node.make_move(r#move) else { continue };
+                        let Some(child) = node.make_move(r#move) else {
+                            continue;
+                        };
                         let eval = self.search(&child, depth - 1, !maximizing, alpha, beta);
                         best_eval = best_eval.min(eval);
                         beta = beta.min(eval);
@@ -374,62 +347,86 @@ impl OuterBoard {
         self.possible_moves(COMPUTER_MARK)
             .into_par_iter()
             .max_by_key(|&r#move| {
-                let value = self.make_move(r#move)
-                    .map_or(i32::MIN, |child| searcher.search(&child, MAX_DEPTH - 1, false, i32::MIN, i32::MAX));
+                let value = self.make_move(r#move).map_or(i32::MIN, |child| {
+                    searcher.search(&child, MAX_DEPTH - 1, false, i32::MIN, i32::MAX)
+                });
                 debug!("move" = ?r#move, "value" = value, "computer_move_opportunity");
                 value
             })
     }
 
+    fn meta_board(&self) -> InnerBoard {
+        let mut meta = InnerBoard::default();
+        for row in 0..3 {
+            for col in 0..3 {
+                meta.squares[row][col] = self.boards[row][col].winner;
+            }
+        }
+        meta.update_winner();
+        meta
+    }
+
     fn heuristic_score(&self) -> i32 {
+        let meta_board = self.meta_board();
+
         // Immediate win/loss
-        if let Some(winner) = self.overall_winner {
-            return if winner == COMPUTER_MARK { i32::MAX } else { i32::MIN };
+        if let Some(winner) = meta_board.winner {
+            return if winner == COMPUTER_MARK {
+                i32::MAX
+            } else {
+                i32::MIN
+            };
         }
 
         let mut score = 0;
 
+        let score_inner = |score: &mut i32, inner_board: &InnerBoard| {
+            if let Some(winner) = inner_board.winner {
+                // Small board win/loss
+                if winner == COMPUTER_MARK {
+                    *score += 1000;
+                } else {
+                    *score -= 1000;
+                }
+            } else {
+                // Threats
+                *score += 100 * inner_board.threats(COMPUTER_MARK) as i32;
+                *score -= 100 * inner_board.threats(HUMAN_MARK) as i32;
+
+                // Center control
+                match inner_board.squares[1][1] {
+                    Some(COMPUTER_MARK) => *score += 10,
+                    Some(HUMAN_MARK) => *score -= 10,
+                    None => {}
+                }
+
+                // Edge control
+                for &(r, c) in &[(0, 1), (1, 0), (1, 2), (2, 1)] {
+                    match inner_board.squares[r][c] {
+                        Some(COMPUTER_MARK) => *score += 5,
+                        Some(HUMAN_MARK) => *score -= 5,
+                        None => {}
+                    }
+                }
+
+                // Corner control
+                for &(r, c) in &[(0, 0), (0, 2), (2, 0), (2, 2)] {
+                    match inner_board.squares[r][c] {
+                        Some(COMPUTER_MARK) => *score += 2,
+                        Some(HUMAN_MARK) => *score -= 2,
+                        None => {}
+                    }
+                }
+            }
+        };
+
+        score_inner(&mut score, &meta_board);
+        score *= 2; // Meta board is more important
+
         for row in 0..3 {
             for col in 0..3 {
                 let inner_board = &self.boards[row][col];
-                if let Some(winner) = inner_board.winner {
-                    // Small board win/loss
-                    if winner == COMPUTER_MARK {
-                        score += 1000;
-                    } else {
-                        score -= 1000;
-                    }
-                } else {
-                    // Threats
-                    score += 100 * inner_board.threats(COMPUTER_MARK) as i32;
-                    score -= 100 * inner_board.threats(HUMAN_MARK) as i32;
-
-                    // Center control
-                    match inner_board.squares[1][1] {
-                        Some(COMPUTER_MARK) => score += 10,
-                        Some(HUMAN_MARK) => score -= 10,
-                        None => {}
-                    }
-
-                    // Edge control
-                    for &(r, c) in &[(0, 1), (1, 0), (1, 2), (2, 1)] {
-                        match inner_board.squares[r][c] {
-                            Some(COMPUTER_MARK) => score += 5,
-                            Some(HUMAN_MARK) => score -= 5,
-                            None => {}
-                        }
-                    }
-
-                    // Corner control
-                    for &(r, c) in &[(0, 0), (0, 2), (2, 0), (2, 2)] {
-                        match inner_board.squares[r][c] {
-                            Some(COMPUTER_MARK) => score += 2,
-                            Some(HUMAN_MARK) => score -= 2,
-                            None => {}
-                        }
-                    }
-
-                }
+                score_inner(&mut score, inner_board);
             }
         }
 

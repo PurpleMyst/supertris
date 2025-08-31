@@ -1,7 +1,7 @@
 use color_eyre::eyre::{Result, eyre};
 use eframe::egui::{self, Rect};
-use tracing::{error, info};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use tracing::{error, info};
 
 mod game;
 
@@ -79,11 +79,12 @@ fn main() -> Result<()> {
 
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_thread_ids(true)
-            )
-        .with(tracing_subscriber::filter::Targets::new()
-            .with_target("supertris", tracing::Level::TRACE)
-            .with_default(tracing::Level::INFO))
+        .with(tracing_subscriber::fmt::layer().with_thread_ids(true))
+        .with(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("supertris", tracing::Level::TRACE)
+                .with_default(tracing::Level::INFO),
+        )
         .try_init()?;
 
     let options = eframe::NativeOptions {
