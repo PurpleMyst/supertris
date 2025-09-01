@@ -1,20 +1,15 @@
 use std::ops::Not;
 
-use rayon::prelude::*;
-use tracing::debug;
+mod searcher;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mark {
-    #[default]
     X,
     O,
 }
 
 pub const HUMAN_MARK: Mark = Mark::X;
 pub const COMPUTER_MARK: Mark = Mark::O;
-
-const MAX_DEPTH: usize = 16;
-const MAX_SEARCH_TIME: f64 = 0.25; // seconds
 
 impl Not for Mark {
     type Output = Self;
@@ -36,27 +31,20 @@ impl std::fmt::Display for Mark {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Draw;
+
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct InnerBoard {
     pub squares: [[Option<Mark>; 3]; 3],
     pub winner: Option<Mark>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct OuterBoard {
     pub boards: [[InnerBoard; 3]; 3],
     pub overall_winner: Option<Mark>,
     pub active_square: Option<(u8, u8)>,
-}
-
-impl Default for OuterBoard {
-    fn default() -> Self {
-        Self {
-            boards: Default::default(),
-            overall_winner: Default::default(),
-            active_square: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -98,63 +86,6 @@ impl InnerBoard {
                 return;
             }
         }
-    }
-
-    // TODO: on the meta board, drawed boards should not count as empty for threats
-    fn threats(&self, mark: Mark) -> usize {
-        let mut threats = 0;
-
-        for row in 0..3 {
-            if self.squares[row]
-                .iter()
-                .filter(|&&cell| cell == Some(mark))
-                .count()
-                == 2
-                && self.squares[row].iter().any(|&cell| cell.is_none())
-            {
-                threats += 1;
-            }
-        }
-
-        for col in 0..3 {
-            if (0..3)
-                .map(|row| self.squares[row][col])
-                .filter(|&cell| cell == Some(mark))
-                .count()
-                == 2
-                && (0..3).any(|row| self.squares[row][col].is_none())
-            {
-                threats += 1;
-            }
-        }
-
-        if (self.squares[0][0] == Some(mark)
-            && self.squares[1][1] == Some(mark)
-            && self.squares[2][2].is_none())
-            || (self.squares[0][0].is_none()
-                && self.squares[1][1] == Some(mark)
-                && self.squares[2][2] == Some(mark))
-            || (self.squares[0][0] == Some(mark)
-                && self.squares[1][1].is_none()
-                && self.squares[2][2] == Some(mark))
-        {
-            threats += 1;
-        }
-
-        if (self.squares[0][2] == Some(mark)
-            && self.squares[1][1] == Some(mark)
-            && self.squares[2][0].is_none())
-            || (self.squares[0][2].is_none()
-                && self.squares[1][1] == Some(mark)
-                && self.squares[2][0] == Some(mark))
-            || (self.squares[0][2] == Some(mark)
-                && self.squares[1][1].is_none()
-                && self.squares[2][0] == Some(mark))
-        {
-            threats += 1;
-        }
-
-        threats
     }
 
     fn can_play(&self) -> bool {
@@ -283,87 +214,7 @@ impl OuterBoard {
     }
 
     pub fn best_move(&self, player: Mark) -> Option<(Move, i32)> {
-        struct Searcher {
-            start_time: std::time::Instant,
-            player: Mark,
-        }
-
-        impl Searcher {
-            fn search(
-                &self,
-                node: &OuterBoard,
-                depth: usize,
-                maximizing: bool,
-
-                mut alpha: i32,
-                mut beta: i32,
-            ) -> i32 {
-                if depth == 0
-                    || node.overall_winner.is_some()
-                    || std::time::Instant::now()
-                        .saturating_duration_since(self.start_time)
-                        .as_secs_f64()
-                        > MAX_SEARCH_TIME
-                {
-                    return node.heuristic_score(
-                        self.player,
-                        if maximizing {
-                            self.player
-                        } else {
-                            !self.player
-                        },
-                    );
-                }
-
-                if maximizing {
-                    let mut best_eval = i32::MIN;
-
-                    for r#move in node.possible_moves(self.player) {
-                        let Some(child) = node.make_move(r#move) else {
-                            continue;
-                        };
-                        let eval = self.search(&child, depth - 1, !maximizing, alpha, beta);
-                        best_eval = best_eval.max(eval);
-                        alpha = alpha.max(eval);
-                        if beta <= alpha {
-                            break; // Beta cut-off
-                        }
-                    }
-
-                    best_eval
-                } else {
-                    let mut best_eval = i32::MAX;
-                    for r#move in node.possible_moves(!self.player) {
-                        let Some(child) = node.make_move(r#move) else {
-                            continue;
-                        };
-                        let eval = self.search(&child, depth - 1, !maximizing, alpha, beta);
-                        best_eval = best_eval.min(eval);
-                        beta = beta.min(eval);
-                        if beta <= alpha {
-                            break; // Alpha cut-off
-                        }
-                    }
-                    best_eval
-                }
-            }
-        }
-
-        let searcher = Searcher {
-            start_time: std::time::Instant::now(),
-            player,
-        };
-
-        self.possible_moves(player)
-            .into_par_iter()
-            .map(|r#move| {
-                let value = self.make_move(r#move).map_or(i32::MIN, |child| {
-                    searcher.search(&child, MAX_DEPTH - 1, false, i32::MIN, i32::MAX)
-                });
-                debug!("move" = ?r#move, "value" = value, "computer_move_opportunity");
-                (r#move, value)
-            })
-            .max_by_key(|&(_, value)| value)
+        searcher::Searcher::search(self, player)
     }
 
     fn meta_board(&self) -> InnerBoard {
@@ -377,74 +228,19 @@ impl OuterBoard {
         meta
     }
 
-    fn heuristic_score(&self, player: Mark, next_mark: Mark) -> i32 {
-        let meta_board = self.meta_board();
-
-        // Immediate win/loss
-        if let Some(winner) = meta_board.winner {
-            return if winner == player { i32::MAX } else { i32::MIN };
-        }
-
-        let mut score = 0;
-
-        let score_inner = |score: &mut i32, inner_board: &InnerBoard| {
-            if let Some(winner) = inner_board.winner {
-                // Small board win/loss
-                if winner == player {
-                    *score += 1000;
-                } else {
-                    *score -= 1000;
-                }
-            } else {
-                // Threats
-                *score += 100 * inner_board.threats(player) as i32;
-                *score -= 100 * inner_board.threats(!player) as i32;
-
-                // Center control
-                if inner_board.squares[1][1] == Some(player) {
-                    *score += 10;
-                } else if inner_board.squares[1][1] == Some(!player) {
-                    *score -= 10;
-                }
-
-                // Edge control
-                for &(r, c) in &[(0, 1), (1, 0), (1, 2), (2, 1)] {
-                    if inner_board.squares[r][c] == Some(player) {
-                        *score += 5;
-                    } else if inner_board.squares[r][c] == Some(!player) {
-                        *score -= 5;
-                    }
-                }
-
-                // Corner control
-                for &(r, c) in &[(0, 0), (0, 2), (2, 0), (2, 2)] {
-                    if inner_board.squares[r][c] == Some(player) {
-                        *score += 2;
-                    } else if inner_board.squares[r][c] == Some(!player) {
-                        *score -= 2;
-                    }
-                }
-            }
-        };
-
-        score_inner(&mut score, &meta_board);
-        score *= 5; // Meta board is more important
-
+    fn meta_board_with_draws(&self) -> [[Option<Result<Mark, Draw>>; 3]; 3] {
+        let mut meta: [[Option<Result<Mark, Draw>>; 3]; 3] = Default::default();
         for row in 0..3 {
             for col in 0..3 {
-                let inner_board = &self.boards[row][col];
-                score_inner(&mut score, inner_board);
+                meta[row][col] = self.boards[row][col].winner.map(Ok).or_else(|| {
+                    if self.boards[row][col].can_play() {
+                        None
+                    } else {
+                        Some(Err(Draw))
+                    }
+                });
             }
         }
-
-        if self.active_square.is_none() {
-            if next_mark == player {
-                score += 200; // Favorable position when we can choose any board
-            } else {
-                score -= 200; // Unfavorable position when opponent can choose any board
-            }
-        }
-
-        score
+        meta
     }
 }
