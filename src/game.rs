@@ -100,6 +100,7 @@ impl InnerBoard {
         }
     }
 
+    // TODO: on the meta board, drawed boards should not count as empty for threats
     fn threats(&self, mark: Mark) -> usize {
         let mut threats = 0;
 
@@ -281,9 +282,10 @@ impl OuterBoard {
         moves
     }
 
-    pub fn computer_move(&self) -> Option<Move> {
+    pub fn best_move(&self, player: Mark) -> Option<(Move, i32)> {
         struct Searcher {
             start_time: std::time::Instant,
+            player: Mark,
         }
 
         impl Searcher {
@@ -303,13 +305,20 @@ impl OuterBoard {
                         .as_secs_f64()
                         > MAX_SEARCH_TIME
                 {
-                    return node.heuristic_score();
+                    return node.heuristic_score(
+                        self.player,
+                        if maximizing {
+                            self.player
+                        } else {
+                            !self.player
+                        },
+                    );
                 }
 
                 if maximizing {
                     let mut best_eval = i32::MIN;
 
-                    for r#move in node.possible_moves(COMPUTER_MARK) {
+                    for r#move in node.possible_moves(self.player) {
                         let Some(child) = node.make_move(r#move) else {
                             continue;
                         };
@@ -324,7 +333,7 @@ impl OuterBoard {
                     best_eval
                 } else {
                     let mut best_eval = i32::MAX;
-                    for r#move in node.possible_moves(HUMAN_MARK) {
+                    for r#move in node.possible_moves(!self.player) {
                         let Some(child) = node.make_move(r#move) else {
                             continue;
                         };
@@ -342,17 +351,19 @@ impl OuterBoard {
 
         let searcher = Searcher {
             start_time: std::time::Instant::now(),
+            player,
         };
 
-        self.possible_moves(COMPUTER_MARK)
+        self.possible_moves(player)
             .into_par_iter()
-            .max_by_key(|&r#move| {
+            .map(|r#move| {
                 let value = self.make_move(r#move).map_or(i32::MIN, |child| {
                     searcher.search(&child, MAX_DEPTH - 1, false, i32::MIN, i32::MAX)
                 });
                 debug!("move" = ?r#move, "value" = value, "computer_move_opportunity");
-                value
+                (r#move, value)
             })
+            .max_by_key(|&(_, value)| value)
     }
 
     fn meta_board(&self) -> InnerBoard {
@@ -366,16 +377,12 @@ impl OuterBoard {
         meta
     }
 
-    fn heuristic_score(&self) -> i32 {
+    fn heuristic_score(&self, player: Mark, next_mark: Mark) -> i32 {
         let meta_board = self.meta_board();
 
         // Immediate win/loss
         if let Some(winner) = meta_board.winner {
-            return if winner == COMPUTER_MARK {
-                i32::MAX
-            } else {
-                i32::MIN
-            };
+            return if winner == player { i32::MAX } else { i32::MIN };
         }
 
         let mut score = 0;
@@ -383,50 +390,58 @@ impl OuterBoard {
         let score_inner = |score: &mut i32, inner_board: &InnerBoard| {
             if let Some(winner) = inner_board.winner {
                 // Small board win/loss
-                if winner == COMPUTER_MARK {
+                if winner == player {
                     *score += 1000;
                 } else {
                     *score -= 1000;
                 }
             } else {
                 // Threats
-                *score += 100 * inner_board.threats(COMPUTER_MARK) as i32;
-                *score -= 100 * inner_board.threats(HUMAN_MARK) as i32;
+                *score += 100 * inner_board.threats(player) as i32;
+                *score -= 100 * inner_board.threats(!player) as i32;
 
                 // Center control
-                match inner_board.squares[1][1] {
-                    Some(COMPUTER_MARK) => *score += 10,
-                    Some(HUMAN_MARK) => *score -= 10,
-                    None => {}
+                if inner_board.squares[1][1] == Some(player) {
+                    *score += 10;
+                } else if inner_board.squares[1][1] == Some(!player) {
+                    *score -= 10;
                 }
 
                 // Edge control
                 for &(r, c) in &[(0, 1), (1, 0), (1, 2), (2, 1)] {
-                    match inner_board.squares[r][c] {
-                        Some(COMPUTER_MARK) => *score += 5,
-                        Some(HUMAN_MARK) => *score -= 5,
-                        None => {}
+                    if inner_board.squares[r][c] == Some(player) {
+                        *score += 5;
+                    } else if inner_board.squares[r][c] == Some(!player) {
+                        *score -= 5;
                     }
                 }
 
                 // Corner control
                 for &(r, c) in &[(0, 0), (0, 2), (2, 0), (2, 2)] {
-                    match inner_board.squares[r][c] {
-                        Some(COMPUTER_MARK) => *score += 2,
-                        Some(HUMAN_MARK) => *score -= 2,
-                        None => {}
+                    if inner_board.squares[r][c] == Some(player) {
+                        *score += 2;
+                    } else if inner_board.squares[r][c] == Some(!player) {
+                        *score -= 2;
                     }
                 }
             }
         };
 
         score_inner(&mut score, &meta_board);
-        score *= 2; // Meta board is more important
+        score *= 5; // Meta board is more important
 
         for row in 0..3 {
             for col in 0..3 {
                 let inner_board = &self.boards[row][col];
                 score_inner(&mut score, inner_board);
+            }
+        }
+
+        if self.active_square.is_none() {
+            if next_mark == player {
+                score += 200; // Favorable position when we can choose any board
+            } else {
+                score -= 200; // Unfavorable position when opponent can choose any board
             }
         }
 

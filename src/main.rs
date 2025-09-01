@@ -10,19 +10,26 @@ struct App {
 
     random_fill_percentage: f64,
 
-    req_tx: SyncSender<game::OuterBoard>,
-    resp_rx: Receiver<Option<game::Move>>,
+    req_tx: SyncSender<(game::Mark, game::OuterBoard)>,
+    resp_rx: Receiver<Option<(game::Move, i32)>>,
     thinking: bool,
+
+    last_player_move: Option<game::Move>,
+    undo_state: Option<game::OuterBoard>,
+
+    last_computer_move: Option<game::Move>,
+
+    eval: i32,
 }
 
 impl Default for App {
     fn default() -> Self {
-        let (req_tx, req_rx) = sync_channel::<game::OuterBoard>(1);
-        let (resp_tx, resp_rx) = sync_channel::<Option<game::Move>>(1);
+        let (req_tx, req_rx) = sync_channel::<(game::Mark, game::OuterBoard)>(1);
+        let (resp_tx, resp_rx) = sync_channel::<Option<(game::Move, i32)>>(1);
 
         std::thread::spawn(move || {
-            for state in req_rx {
-                let result = resp_tx.send(state.computer_move());
+            for (player, state) in req_rx {
+                let result = resp_tx.send(state.best_move(player));
                 if result.is_err() {
                     break;
                 }
@@ -35,6 +42,10 @@ impl Default for App {
             req_tx,
             resp_rx,
             thinking: false,
+            eval: 0,
+            last_player_move: None,
+            undo_state: None,
+            last_computer_move: None,
         }
     }
 }
@@ -110,18 +121,94 @@ impl eframe::App for App {
                 ui.label("Basta col solito tris, prova Supertris!");
             });
             ui.separator();
-            if ui.button("Ricomincia").clicked() {
-                *self = App::default();
-            }
 
-            let random_btn = ui.button("A caso");
+            ui.horizontal(|ui| {
+                if ui.button("Ricomincia").clicked() {
+                    *self = App::default();
+                }
+
+                let random_btn = ui.button("Partita a caso");
+                if random_btn.clicked() {
+                    self.board = game::OuterBoard::random(self.random_fill_percentage);
+                }
+
+                if ui.button("Gioca per me").clicked() {
+                    if !self.thinking {
+                        self.req_tx.send((game::HUMAN_MARK, self.board)).unwrap();
+                        self.thinking = true;
+                    }
+                }
+
+                if ui.button("Annulla mossa").clicked()
+                    && let Some(board) = self.undo_state.take()
+                {
+                    assert!(!self.thinking);
+                    self.board = board;
+                }
+            });
             ui.add(
                 egui::Slider::new(&mut self.random_fill_percentage, 0.0..=1.0)
-                    .text("Fill Percentage"),
+                    .text("Percentuale di caselle riempite"),
             );
-            if random_btn.clicked() {
-                self.board = game::OuterBoard::random(self.random_fill_percentage);
-            }
+
+            ui.separator();
+
+            ui.vertical_centered(|ui| {
+                let mut left_font_size = 1.0f32;
+                let mut right_font_size = 256.0f32;
+
+                // binary search
+                loop {
+                    if (right_font_size - left_font_size).abs() < 1.0 {
+                        break;
+                    }
+
+                    let font_size = (left_font_size + right_font_size) / 2.0;
+
+                    let header_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            "Valutazione:".to_string(),
+                            egui::FontId::proportional(font_size),
+                            egui::Color32::WHITE,
+                        )
+                        .size()
+                        .x;
+                    let num_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            format!("{}", self.eval),
+                            egui::FontId::proportional(font_size),
+                            egui::Color32::WHITE,
+                        )
+                        .size()
+                        .x;
+                    let w = header_width.max(num_width);
+
+                    if w > ui.available_width() * 0.9 {
+                        right_font_size = font_size;
+                    } else if w < ui.available_width() * 0.9 {
+                        left_font_size = font_size;
+                    } else {
+                        break;
+                    }
+                }
+                let font_size = (left_font_size + right_font_size) / 2.0;
+                ui.label(
+                    egui::RichText::new("Valutazione:").font(egui::FontId::proportional(font_size)),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{}", self.eval))
+                        .font(egui::FontId::proportional(font_size))
+                        .color(if self.eval < 0 {
+                            egui::Color32::RED
+                        } else if self.eval > 0 {
+                            egui::Color32::BLUE
+                        } else {
+                            egui::Color32::YELLOW
+                        }),
+                );
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -135,18 +222,33 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
 
     if app.thinking {
         if let Ok(computer_move) = app.resp_rx.try_recv() {
-            if let Some(r#move) = computer_move {
-                let _span = tracing::debug_span!("computer_move", "move" = ?r#move).entered();
+            if let Some((r#move, eval)) = computer_move {
+                let _span = tracing::debug_span!("computer_move", "move" = ?r#move, eval).entered();
                 if let Some(new_board) = app.board.make_move(r#move) {
                     info!("computer_move_done");
+                    if r#move.player == game::COMPUTER_MARK {
+                        app.last_computer_move = Some(r#move);
+                    } else {
+                        app.last_player_move = Some(r#move);
+                        app.undo_state = Some(app.board);
+                    }
                     app.board = new_board;
+                    app.eval = eval;
                 } else {
                     error!("computer_move_invalid");
                 }
+
+                if r#move.player != game::COMPUTER_MARK {
+                    // start response
+                    app.req_tx.send((game::COMPUTER_MARK, app.board)).unwrap();
+                    app.thinking = true;
+                } else {
+                    app.thinking = false;
+                }
             } else {
                 error!("no_computer_move");
+                app.thinking = false;
             }
-            app.thinking = false;
         } else {
             egui::Modal::new("thinking_modal".into()).show(ui.ctx(), |ui| {
                 ui.vertical_centered(|ui| {
@@ -157,33 +259,19 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    if app.board.overall_winner.is_some() {
-        draw_filled_square(
-            ui.painter(),
-            gh.rect.center().x,
-            gh.rect.center().y,
-            gh.rect.width() / 2.0 * 0.85,
-            app.board.overall_winner.unwrap(),
-        );
-        return;
-    }
-
-    draw_grid_lines(ui, gh, app.board.active_square.is_none());
+    draw_grid_lines(
+        ui,
+        gh,
+        app.board.overall_winner.is_none() && app.board.active_square.is_none(),
+    );
 
     let mut player_move = None;
 
     for row in 0..3 {
         for col in 0..3 {
             let inner_board = &mut app.board.boards[row as usize][col as usize];
-
-            if let Some(winner) = inner_board.winner {
-                draw_grid_item(ui, gh, row, col, Some(winner));
-                continue;
-            }
-
             let sub_gh = gh.subgrid(row, col);
 
-            // draw_grid_lines(ui, sub_gh, (row, col) == app.board.active_square);
             draw_grid_lines(ui, sub_gh, app.board.active_square == Some((row, col)));
 
             for inner_row in 0..3 {
@@ -194,6 +282,12 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                         inner_row,
                         inner_col,
                         inner_board.squares[inner_row as usize][inner_col as usize],
+                        app.board.overall_winner.is_none()
+                            && (app.last_computer_move.is_some_and(|m| {
+                                m.outer == (row, col) && m.inner == (inner_row, inner_col)
+                            }) || app.last_player_move.is_some_and(|m| {
+                                m.outer == (row, col) && m.inner == (inner_row, inner_col)
+                            })),
                     )
                     .clicked()
                     {
@@ -205,6 +299,22 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                     }
                 }
             }
+
+            if let Some(winner) = inner_board.winner {
+                draw_opacizing_square(ui, sub_gh);
+                draw_grid_item(
+                    ui,
+                    gh,
+                    row,
+                    col,
+                    Some(winner),
+                    app.board.overall_winner.is_none()
+                        && (app
+                            .last_computer_move
+                            .is_some_and(|m| m.outer == (row, col))
+                            || app.last_player_move.is_some_and(|m| m.outer == (row, col))),
+                );
+            }
         }
     }
 
@@ -213,11 +323,42 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
         && let Some(new_board) = app.board.make_move(player_move)
     {
         info!("move" = ?player_move, "player_move_done");
+        app.last_player_move = Some(player_move);
+        app.undo_state = Some(app.board);
         app.board = new_board;
 
-        app.req_tx.send(app.board).unwrap();
+        app.req_tx.send((game::COMPUTER_MARK, app.board)).unwrap();
         app.thinking = true;
     }
+
+    if app.board.overall_winner.is_some() {
+        let t = (ui.ctx().input(|i| i.time).sin() + 1.0) / 2.0;
+        let scale = (0.85 - 0.5) * t as f32 + 0.5;
+
+        draw_opacizing_square(ui, gh);
+        draw_filled_square(
+            ui.painter(),
+            gh.rect.center().x,
+            gh.rect.center().y,
+            gh.rect.width() / 2.0 * scale,
+            app.board.overall_winner.unwrap(),
+            false,
+        );
+
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(16));
+    }
+}
+
+fn draw_opacizing_square(ui: &mut egui::Ui, gh: GridHelper) {
+    let painter = ui.painter();
+    painter.rect(
+        gh.rect,
+        3.0,
+        egui::Color32::from_rgba_unmultiplied(0xe1, 0xe1, 0xe1, 150),
+        egui::Stroke::NONE,
+        egui::StrokeKind::Inside,
+    );
 }
 
 fn draw_grid_item(
@@ -226,6 +367,7 @@ fn draw_grid_item(
     row: u8,
     col: u8,
     square: Option<game::Mark>,
+    highlight: bool,
 ) -> egui::Response {
     let painter = ui.painter();
 
@@ -233,7 +375,7 @@ fn draw_grid_item(
     let radius = gh.square_size() / 2.0 * 0.85;
 
     if let Some(square) = square {
-        draw_filled_square(painter, x, y, radius, square);
+        draw_filled_square(painter, x, y, radius, square, highlight);
     }
 
     ui.interact(
@@ -243,11 +385,21 @@ fn draw_grid_item(
     )
 }
 
-fn draw_filled_square(painter: &egui::Painter, x: f32, y: f32, radius: f32, square: game::Mark) {
-    let color = match square {
-        game::Mark::X => egui::Color32::RED,
-        game::Mark::O => egui::Color32::BLUE,
+fn draw_filled_square(
+    painter: &egui::Painter,
+    x: f32,
+    y: f32,
+    radius: f32,
+    square: game::Mark,
+    highlight: bool,
+) {
+    let color = match (square, highlight) {
+        (game::Mark::X, false) => egui::Color32::RED,
+        (game::Mark::X, true) => egui::Color32::from_rgb(255, 105, 180), // light red
+        (game::Mark::O, false) => egui::Color32::BLUE,
+        (game::Mark::O, true) => egui::Color32::from_rgb(135, 206, 250), // light blue
     };
+    let stroke_width = if highlight { 4.0 } else { 2.0 };
 
     match square {
         game::Mark::X => {
@@ -256,14 +408,14 @@ fn draw_filled_square(painter: &egui::Painter, x: f32, y: f32, radius: f32, squa
                     egui::pos2(x - radius, y - radius),
                     egui::pos2(x + radius, y + radius),
                 ],
-                egui::Stroke::new(2.0, color),
+                egui::Stroke::new(stroke_width, color),
             );
             painter.line_segment(
                 [
                     egui::pos2(x + radius, y - radius),
                     egui::pos2(x - radius, y + radius),
                 ],
-                egui::Stroke::new(2.0, color),
+                egui::Stroke::new(stroke_width, color),
             );
         }
         game::Mark::O => {
@@ -271,7 +423,7 @@ fn draw_filled_square(painter: &egui::Painter, x: f32, y: f32, radius: f32, squa
                 egui::Pos2 { x, y },
                 radius,
                 egui::Color32::TRANSPARENT,
-                egui::Stroke::new(2.0, color),
+                egui::Stroke::new(stroke_width, color),
             );
         }
     }
