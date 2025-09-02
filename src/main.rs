@@ -5,7 +5,7 @@ use tracing::{error, info};
 
 mod game;
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 struct GameState {
     board: game::OuterBoard,
     last_player_move: Option<game::Move>,
@@ -248,23 +248,36 @@ impl eframe::App for App {
                 if ui.button("Salva").clicked()
                     && let Some(path) = rfd::FileDialog::new()
                         .set_title("Salva partita")
-                        .set_file_name("supertris_save.json")
+                        .set_file_name("supertris_save.bin")
                         .save_file()
                 {
-                    std::fs::write(path, serde_json::to_string(&self.states).unwrap()).unwrap();
+                    bincode::encode_into_std_write(
+                        &self.states,
+                        &mut std::fs::File::create(&path).unwrap(),
+                        bincode::config::standard(),
+                    )
+                    .unwrap();
+                    info!(path = %path.display(), "game_saved");
                 }
                 if ui.button("Carica").clicked()
                     && let Some(path) = rfd::FileDialog::new()
                         .set_title("Carica partita")
-                        .set_file_name("supertris_save.json")
-                        .add_filter("JSON", &["json"])
+                        .set_file_name("supertris_save.bin")
+                        .add_filter("Binary save file", &["bin"])
                         .pick_file()
                 {
                     let rfp = self.random_fill_percentage;
                     *self = App::default();
                     self.random_fill_percentage = rfp;
-                    self.states =
-                        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+                    self.states = bincode::decode_from_std_read(
+                        &mut std::fs::File::open(&path).unwrap(),
+                        bincode::config::standard(),
+                    )
+                    .unwrap_or_else(|e| {
+                        error!(error = ?e, "save_load_error");
+                        vec![]
+                    });
+                    info!(path = %path.display(), "game_loaded");
                 }
             });
         });
@@ -310,6 +323,7 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                     }
                 } else {
                     error!("computer_move_invalid");
+                    app.thinking = false;
                 }
             } else {
                 error!("no_computer_move");
