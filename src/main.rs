@@ -5,21 +5,33 @@ use tracing::{error, info};
 
 mod game;
 
-struct App {
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct GameState {
     board: game::OuterBoard,
+    last_player_move: Option<game::Move>,
+    last_computer_move: Option<game::Move>,
+    eval: i32,
+}
 
+impl GameState {
+    fn root(board: game::OuterBoard) -> Self {
+        Self {
+            board,
+            last_player_move: None,
+            last_computer_move: None,
+            eval: 0,
+        }
+    }
+}
+
+struct App {
     random_fill_percentage: f64,
 
     req_tx: SyncSender<(game::Mark, game::OuterBoard)>,
     resp_rx: Receiver<Option<(game::Move, i32)>>,
     thinking: bool,
 
-    last_player_move: Option<game::Move>,
-    undo_state: Option<game::OuterBoard>,
-
-    last_computer_move: Option<game::Move>,
-
-    eval: i32,
+    states: Vec<GameState>,
 }
 
 impl Default for App {
@@ -37,15 +49,11 @@ impl Default for App {
         });
 
         Self {
-            board: Default::default(),
             random_fill_percentage: 0.5,
             req_tx,
             resp_rx,
             thinking: false,
-            eval: 0,
-            last_player_move: None,
-            undo_state: None,
-            last_computer_move: None,
+            states: vec![],
         }
     }
 }
@@ -113,6 +121,30 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+impl App {
+    fn board(&self) -> game::OuterBoard {
+        self.states
+            .last()
+            .map_or_else(|| game::OuterBoard::default(), |s| s.board)
+    }
+
+    fn eval(&self) -> i32 {
+        self.states.last().map_or(0, |s| s.eval)
+    }
+
+    fn last_player_move(&self) -> Option<game::Move> {
+        self.states.last().and_then(|s| s.last_player_move)
+    }
+
+    fn last_computer_move(&self) -> Option<game::Move> {
+        self.states.last().and_then(|s| s.last_computer_move)
+    }
+
+    fn overall_winner(&self) -> Option<game::Mark> {
+        self.states.last().map_or(None, |s| s.board.overall_winner)
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
@@ -123,27 +155,28 @@ impl eframe::App for App {
             ui.separator();
 
             ui.horizontal(|ui| {
-                if ui.button("Ricomincia").clicked() {
+                if ui.button("Reset").clicked() {
                     *self = App::default();
                 }
 
                 let random_btn = ui.button("Partita a caso");
                 if random_btn.clicked() {
-                    self.board = game::OuterBoard::random(self.random_fill_percentage);
+                    self.states.clear();
+                    self.states.push(GameState::root(game::OuterBoard::random(
+                        self.random_fill_percentage,
+                    )));
                 }
 
                 if ui.button("Gioca per me").clicked() {
                     if !self.thinking {
-                        self.req_tx.send((game::HUMAN_MARK, self.board)).unwrap();
+                        self.req_tx.send((game::HUMAN_MARK, self.board())).unwrap();
                         self.thinking = true;
                     }
                 }
 
-                if ui.button("Annulla mossa").clicked()
-                    && let Some(board) = self.undo_state.take()
-                {
+                if ui.button("Annulla mossa").clicked() {
                     assert!(!self.thinking);
-                    self.board = board;
+                    self.states.pop();
                 }
             });
             ui.add(
@@ -177,7 +210,7 @@ impl eframe::App for App {
                     let num_width = ui
                         .painter()
                         .layout_no_wrap(
-                            format!("{}", self.eval),
+                            format!("{}", self.eval()),
                             egui::FontId::proportional(font_size),
                             egui::Color32::WHITE,
                         )
@@ -198,16 +231,41 @@ impl eframe::App for App {
                     egui::RichText::new("Valutazione:").font(egui::FontId::proportional(font_size)),
                 );
                 ui.label(
-                    egui::RichText::new(format!("{}", self.eval))
+                    egui::RichText::new(format!("{}", self.eval()))
                         .font(egui::FontId::proportional(font_size))
-                        .color(if self.eval < 0 {
+                        .color(if self.eval() < 0 {
                             egui::Color32::RED
-                        } else if self.eval > 0 {
+                        } else if self.eval() > 0 {
                             egui::Color32::BLUE
                         } else {
                             egui::Color32::YELLOW
                         }),
                 );
+            });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Salva").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .set_title("Salva partita")
+                        .set_file_name("supertris_save.json")
+                        .save_file()
+                {
+                    std::fs::write(path, serde_json::to_string(&self.states).unwrap()).unwrap();
+                }
+                if ui.button("Carica").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .set_title("Carica partita")
+                        .set_file_name("supertris_save.json")
+                        .add_filter("JSON", &["json"])
+                        .pick_file()
+                {
+                    let rfp = self.random_fill_percentage;
+                    *self = App::default();
+                    self.random_fill_percentage = rfp;
+                    self.states =
+                        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+                }
             });
         });
 
@@ -224,26 +282,34 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
         if let Ok(computer_move) = app.resp_rx.try_recv() {
             if let Some((r#move, eval)) = computer_move {
                 let _span = tracing::debug_span!("computer_move", "move" = ?r#move, eval).entered();
-                if let Some(new_board) = app.board.make_move(r#move) {
+                if let Some(new_board) = app.board().make_move(r#move) {
                     info!("computer_move_done");
-                    if r#move.player == game::COMPUTER_MARK {
-                        app.last_computer_move = Some(r#move);
+
+                    let is_fake_human = r#move.player != game::COMPUTER_MARK;
+
+                    if is_fake_human {
+                        let mut new_state = app
+                            .states
+                            .last()
+                            .copied()
+                            .unwrap_or_else(|| GameState::root(game::OuterBoard::default()));
+
+                        new_state.last_player_move = Some(r#move);
+                        new_state.board = new_board;
+                        new_state.eval = eval;
+
+                        app.states.push(new_state);
+                        app.req_tx.send((game::COMPUTER_MARK, app.board())).unwrap();
+                        app.thinking = true;
                     } else {
-                        app.last_player_move = Some(r#move);
-                        app.undo_state = Some(app.board);
+                        let state = app.states.last_mut().unwrap();
+                        state.last_computer_move = Some(r#move);
+                        state.board = new_board;
+                        state.eval = eval;
+                        app.thinking = false;
                     }
-                    app.board = new_board;
-                    app.eval = eval;
                 } else {
                     error!("computer_move_invalid");
-                }
-
-                if r#move.player != game::COMPUTER_MARK {
-                    // start response
-                    app.req_tx.send((game::COMPUTER_MARK, app.board)).unwrap();
-                    app.thinking = true;
-                } else {
-                    app.thinking = false;
                 }
             } else {
                 error!("no_computer_move");
@@ -262,17 +328,17 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
     draw_grid_lines(
         ui,
         gh,
-        app.board.overall_winner.is_none() && app.board.active_square.is_none(),
+        app.overall_winner().is_none() && app.board().active_square.is_none(),
     );
 
     let mut player_move = None;
 
     for row in 0..3 {
         for col in 0..3 {
-            let inner_board = &mut app.board.boards[row as usize][col as usize];
+            let inner_board = &mut app.board().boards[row as usize][col as usize];
             let sub_gh = gh.subgrid(row, col);
 
-            draw_grid_lines(ui, sub_gh, app.board.active_square == Some((row, col)));
+            draw_grid_lines(ui, sub_gh, app.board().active_square == Some((row, col)));
 
             for inner_row in 0..3 {
                 for inner_col in 0..3 {
@@ -282,10 +348,10 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                         inner_row,
                         inner_col,
                         inner_board.squares[inner_row as usize][inner_col as usize],
-                        app.board.overall_winner.is_none()
-                            && (app.last_computer_move.is_some_and(|m| {
+                        app.overall_winner().is_none()
+                            && (app.last_computer_move().is_some_and(|m| {
                                 m.outer == (row, col) && m.inner == (inner_row, inner_col)
-                            }) || app.last_player_move.is_some_and(|m| {
+                            }) || app.last_player_move().is_some_and(|m| {
                                 m.outer == (row, col) && m.inner == (inner_row, inner_col)
                             })),
                     )
@@ -308,11 +374,13 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                     row,
                     col,
                     Some(winner),
-                    app.board.overall_winner.is_none()
+                    app.board().overall_winner.is_none()
                         && (app
-                            .last_computer_move
+                            .last_computer_move()
                             .is_some_and(|m| m.outer == (row, col))
-                            || app.last_player_move.is_some_and(|m| m.outer == (row, col))),
+                            || app
+                                .last_player_move()
+                                .is_some_and(|m| m.outer == (row, col))),
                 );
             }
         }
@@ -320,18 +388,24 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
 
     if !app.thinking
         && let Some(player_move) = player_move
-        && let Some(new_board) = app.board.make_move(player_move)
+        && let Some(new_board) = app.board().make_move(player_move)
     {
         info!("move" = ?player_move, "player_move_done");
-        app.last_player_move = Some(player_move);
-        app.undo_state = Some(app.board);
-        app.board = new_board;
+        let mut new_state = app
+            .states
+            .last()
+            .copied()
+            .unwrap_or_else(|| GameState::root(game::OuterBoard::default()));
+        new_state.board = new_board;
+        new_state.last_player_move = Some(player_move);
+        new_state.eval = 0;
+        app.states.push(new_state);
 
-        app.req_tx.send((game::COMPUTER_MARK, app.board)).unwrap();
+        app.req_tx.send((game::COMPUTER_MARK, app.board())).unwrap();
         app.thinking = true;
     }
 
-    if app.board.overall_winner.is_some() {
+    if app.overall_winner().is_some() {
         let t = (ui.ctx().input(|i| i.time).sin() + 1.0) / 2.0;
         let scale = (0.85 - 0.5) * t as f32 + 0.5;
 
@@ -341,7 +415,7 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
             gh.rect.center().x,
             gh.rect.center().y,
             gh.rect.width() / 2.0 * scale,
-            app.board.overall_winner.unwrap(),
+            app.overall_winner().unwrap(),
             false,
         );
 

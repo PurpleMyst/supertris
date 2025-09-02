@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+
+use dashmap::DashMap;
 use rayon::prelude::*;
 use tracing::debug;
 
@@ -8,11 +11,28 @@ pub struct Searcher {
     pub player: Mark,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct TTableKey {
+    board: OuterBoard,
+    maximizing: bool,
+    player: Mark,
+}
+
+#[allow(dead_code)]
+struct TTableValue {
+    value: i32,
+    depth: usize,
+}
+
+static TRANSPOSITION_TABLE: OnceLock<DashMap<TTableKey, TTableValue>> = OnceLock::new();
+
 const MAX_DEPTH: usize = 16;
 const MAX_SEARCH_TIME: f64 = 0.25; // seconds
 
 impl Searcher {
     pub fn search(board: &OuterBoard, player: Mark) -> Option<(Move, i32)> {
+        TRANSPOSITION_TABLE.get_or_init(|| DashMap::new());
+
         let searcher = Self {
             start_time: std::time::Instant::now(),
             player,
@@ -40,6 +60,16 @@ impl Searcher {
         mut alpha: i32,
         mut beta: i32,
     ) -> i32 {
+        // let table = TRANSPOSITION_TABLE.get().unwrap();
+        // let key = TableKey {
+        //     board: *node,
+        //     depth,
+        //     maximizing,
+        // };
+        // if let Some(&cached) = table.get(&key).map(|entry| *entry.value()) && cached.depth >= depth {
+        //     return cached;
+        // }
+
         if depth == 0
             || node.overall_winner.is_some()
             || std::time::Instant::now()

@@ -2,7 +2,7 @@ use std::ops::Not;
 
 mod searcher;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Mark {
     X,
     O,
@@ -34,20 +34,24 @@ impl std::fmt::Display for Mark {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Draw;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Default, Debug, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct InnerBoard {
     pub squares: [[Option<Mark>; 3]; 3],
     pub winner: Option<Mark>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Default, Debug, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct OuterBoard {
     pub boards: [[InnerBoard; 3]; 3],
     pub overall_winner: Option<Mark>,
     pub active_square: Option<(u8, u8)>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Move {
     pub outer: (u8, u8),
     pub inner: (u8, u8),
