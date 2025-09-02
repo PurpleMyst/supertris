@@ -396,6 +396,8 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                                 .last_player_move()
                                 .is_some_and(|m| m.outer == (row, col))),
                 );
+            } else if !inner_board.can_play() {
+                draw_opacizing_square(ui, sub_gh);
             }
         }
     }

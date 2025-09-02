@@ -88,7 +88,7 @@ impl InnerBoard {
         }
     }
 
-    fn can_play(&self) -> bool {
+    pub fn can_play(&self) -> bool {
         self.winner.is_none()
             && self
                 .squares

@@ -70,6 +70,14 @@ impl Searcher {
         //     return cached;
         // }
 
+        if !node
+            .boards
+            .iter()
+            .any(|row| row.iter().any(|b| b.can_play()))
+        {
+            return 0; // Draw
+        }
+
         if depth == 0
             || node.overall_winner.is_some()
             || std::time::Instant::now()
