@@ -198,26 +198,19 @@ impl eframe::App for App {
 
                     let font_size = (left_font_size + right_font_size) / 2.0;
 
-                    let header_width = ui
-                        .painter()
-                        .layout_no_wrap(
-                            "Valutazione:".to_string(),
-                            egui::FontId::proportional(font_size),
-                            egui::Color32::WHITE,
-                        )
-                        .size()
-                        .x;
-                    let num_width = ui
-                        .painter()
-                        .layout_no_wrap(
-                            format!("{}", self.eval()),
-                            egui::FontId::proportional(font_size),
-                            egui::Color32::WHITE,
-                        )
-                        .size()
-                        .x;
-                    let w = header_width.max(num_width);
-
+                    let w = ["Valutazione:".to_string(), self.eval.to_string()]
+                        .iter()
+                        .map(|s| {
+                            ui.painter()
+                                .layout_no_wrap(
+                                    s.to_string(),
+                                    egui::FontId::proportional(font_size),
+                                    egui::Color32::WHITE,
+                                )
+                                .size()
+                                .x
+                        })
+                        .fold(0.0, f32::max);
                     if w > ui.available_width() * 0.9 {
                         right_font_size = font_size;
                     } else if w < ui.available_width() * 0.9 {
@@ -381,7 +374,7 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
             }
 
             if let Some(winner) = inner_board.winner {
-                draw_opacizing_square(ui, sub_gh);
+                draw_obscuring_square(ui, sub_gh);
                 draw_grid_item(
                     ui,
                     gh,
@@ -397,7 +390,7 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                                 .is_some_and(|m| m.outer == (row, col))),
                 );
             } else if !inner_board.can_play() {
-                draw_opacizing_square(ui, sub_gh);
+                draw_obscuring_square(ui, sub_gh);
             }
         }
     }
@@ -425,7 +418,7 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
         let t = (ui.ctx().input(|i| i.time).sin() + 1.0) / 2.0;
         let scale = (0.85 - 0.5) * t as f32 + 0.5;
 
-        draw_opacizing_square(ui, gh);
+        draw_obscuring_square(ui, gh);
         draw_filled_square(
             ui.painter(),
             gh.rect.center().x,
@@ -440,7 +433,7 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
     }
 }
 
-fn draw_opacizing_square(ui: &mut egui::Ui, gh: GridHelper) {
+fn draw_obscuring_square(ui: &mut egui::Ui, gh: GridHelper) {
     let painter = ui.painter();
     painter.rect(
         gh.rect,
