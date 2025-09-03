@@ -2882,6 +2882,7 @@ dependencies = [
  "rayon",
  "rfd",
  "tracing",
+ "tracing-error",
  "tracing-subscriber",
 ]
 

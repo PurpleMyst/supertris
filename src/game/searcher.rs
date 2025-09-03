@@ -44,7 +44,7 @@ impl Searcher {
         board
             .possible_moves(player)
             .into_par_iter()
-            .map(|r#move| {
+            .map(|&r#move| {
                 let value = board.make_move(r#move).map_or(i32::MIN, |child| {
                     searcher.branch(&child, MAX_DEPTH - 1, false, i32::MIN, i32::MAX)
                 });

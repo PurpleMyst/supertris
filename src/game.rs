@@ -3,6 +3,8 @@ use std::{
     ops::Not,
 };
 
+use arrayvec::ArrayVec;
+
 pub mod searcher;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, bincode::Encode, bincode::Decode)]
@@ -99,8 +101,8 @@ impl InnerBoard {
                 .any(|row| row.iter().any(|&cell| cell.is_none()))
     }
 
-    fn possible_moves(&self) -> Vec<(u8, u8)> {
-        let mut moves = Vec::new();
+    fn possible_moves(&self) -> ArrayVec<(u8, u8), 9> {
+        let mut moves = ArrayVec::new();
         if !self.can_play() {
             return moves;
         }
@@ -229,8 +231,8 @@ impl OuterBoard {
         self.overall_winner = self.meta_board().winner;
     }
 
-    pub fn possible_moves(&self, player: Mark) -> Vec<Move> {
-        let mut moves = Vec::new();
+    pub fn possible_moves(&self, player: Mark) -> ArrayVec<Move, 81> {
+        let mut moves = ArrayVec::new();
         if let Some((outer_row, outer_col)) = self.active_square {
             let inner_board = &self.boards[outer_row as usize][outer_col as usize];
             for (inner_row, inner_col) in inner_board.possible_moves() {

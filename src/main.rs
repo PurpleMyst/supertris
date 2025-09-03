@@ -5,7 +5,7 @@ use tracing::{error, info};
 
 mod game;
 
-#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Copy, Default, bincode::Encode, bincode::Decode)]
 struct GameState {
     board: game::OuterBoard,
     last_player_move: Option<game::Move>,
@@ -104,6 +104,7 @@ fn main() -> Result<()> {
                 .with_target("supertris", tracing::Level::TRACE)
                 .with_default(tracing::Level::INFO),
         )
+        .with(tracing_error::ErrorLayer::default())
         .try_init()?;
 
     let options = eframe::NativeOptions {
@@ -183,6 +184,15 @@ impl eframe::App for App {
                 egui::Slider::new(&mut self.random_fill_percentage, 0.0..=1.0)
                     .text("Percentuale di caselle riempite"),
             );
+            if ui.button("Inizia la CPU").clicked() {
+                assert!(!self.thinking);
+                if self.states.is_empty() {
+                    self.req_tx.send((game::COMPUTER_MARK, self.board())).unwrap();
+                    self.thinking = true;
+                } else {
+                    error!("cannot_start_cpu_after_player_move");
+                }
+            }
 
             ui.separator();
 
@@ -332,6 +342,9 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
                         app.req_tx.send((game::COMPUTER_MARK, app.board())).unwrap();
                         app.thinking = true;
                     } else {
+                        if app.states.is_empty() {
+                            app.states.push(GameState::default());
+                        }
                         let state = app.states.last_mut().unwrap();
                         state.last_computer_move = Some(r#move);
                         state.board = new_board;
