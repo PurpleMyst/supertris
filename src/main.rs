@@ -198,7 +198,7 @@ impl eframe::App for App {
 
                     let font_size = (left_font_size + right_font_size) / 2.0;
 
-                    let w = ["Valutazione:".to_string(), self.eval.to_string()]
+                    let w = ["Valutazione:".to_string(), self.eval().to_string()]
                         .iter()
                         .map(|s| {
                             ui.painter()
@@ -237,6 +237,30 @@ impl eframe::App for App {
             });
 
             ui.separator();
+
+            ui.label(format!(
+                "Hit sul cache: {}",
+                game::searcher::TRANSPOSITION_TABLE.get().map_or(0, |t| {
+                    t.iter()
+                        .map(|kv| kv.value().hits.load(std::sync::atomic::Ordering::Relaxed))
+                        .sum()
+                })
+            ));
+            ui.label(format!(
+                "Entries nel cache: {}",
+                game::searcher::TRANSPOSITION_TABLE
+                    .get()
+                    .map_or(0, |t| t.len())
+            ));
+            ui.label(format!(
+                "Dimensione cache: {:.2} MiB",
+                game::searcher::TRANSPOSITION_TABLE.get().map_or(0.0, |t| {
+                    t.len() * std::mem::size_of::<game::searcher::TTableValue>()
+                } as f64
+                    / 1024.0
+                    / 1024.0)
+            ));
+
             ui.horizontal(|ui| {
                 if ui.button("Salva").clicked()
                     && let Some(path) = rfd::FileDialog::new()
@@ -407,11 +431,17 @@ fn draw_game(ui: &mut egui::Ui, app: &mut App) {
             .unwrap_or_else(|| GameState::root(game::OuterBoard::default()));
         new_state.board = new_board;
         new_state.last_player_move = Some(player_move);
-        new_state.eval = 0;
+        new_state.eval = game::searcher::Searcher::heuristic(
+            &new_state.board,
+            game::COMPUTER_MARK,
+            game::COMPUTER_MARK,
+        );
         app.states.push(new_state);
 
-        app.req_tx.send((game::COMPUTER_MARK, app.board())).unwrap();
-        app.thinking = true;
+        if app.overall_winner().is_none() {
+            app.req_tx.send((game::COMPUTER_MARK, app.board())).unwrap();
+            app.thinking = true;
+        }
     }
 
     if app.overall_winner().is_some() {

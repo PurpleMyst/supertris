@@ -1,6 +1,9 @@
-use std::ops::Not;
+use std::{
+    mem::{MaybeUninit, transmute},
+    ops::Not,
+};
 
-mod searcher;
+pub mod searcher;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, bincode::Encode, bincode::Decode)]
 pub enum Mark {
@@ -143,6 +146,47 @@ impl OuterBoard {
         this.update_overall_winner();
 
         this
+    }
+
+    fn rot90(&self) -> Self {
+        let mut new_self = Self::default();
+        new_self.active_square = self.active_square.map(|(r, c)| (c, 2 - r));
+        new_self.overall_winner = self.overall_winner;
+        for r in 0..3 {
+            for c in 0..3 {
+                let new_r = c;
+                let new_c = 2 - r;
+                new_self.boards[new_r][new_c] = self.boards[r][c];
+            }
+        }
+        new_self
+    }
+
+    fn reflect_vertical(&self) -> Self {
+        let mut new_self = *self;
+        if let Some((r, c)) = self.active_square {
+            new_self.active_square = Some((r, 2 - c));
+        }
+        for r in 0..3 {
+            new_self.boards[r].reverse();
+        }
+        new_self
+    }
+
+    pub fn all_variations(&self) -> [Self; 8] {
+        let mut variations = [const { MaybeUninit::<Self>::uninit() }; 8];
+        variations[0].write(*self);
+        for i in 1..4 {
+            unsafe {
+                variations[i].write(variations[i - 1].assume_init_read().rot90());
+            }
+        }
+        for i in 0..4 {
+            unsafe {
+                variations[i + 4].write(variations[i].assume_init_read().reflect_vertical());
+            }
+        }
+        unsafe { transmute(variations) }
     }
 
     #[must_use]

@@ -1,4 +1,7 @@
-use std::sync::OnceLock;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use dashmap::DashMap;
 use rayon::prelude::*;
@@ -12,19 +15,19 @@ pub struct Searcher {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct TTableKey {
-    board: OuterBoard,
-    maximizing: bool,
-    player: Mark,
+pub struct TTableKey {
+    pub board: OuterBoard,
+    pub maximizing: bool,
+    pub player: Mark,
 }
 
-#[allow(dead_code)]
-struct TTableValue {
-    value: i32,
-    depth: usize,
+pub struct TTableValue {
+    pub eval: i32,
+    pub depth: usize,
+    pub hits: AtomicUsize,
 }
 
-static TRANSPOSITION_TABLE: OnceLock<DashMap<TTableKey, TTableValue>> = OnceLock::new();
+pub static TRANSPOSITION_TABLE: OnceLock<DashMap<TTableKey, TTableValue>> = OnceLock::new();
 
 const MAX_DEPTH: usize = 16;
 const MAX_SEARCH_TIME: f64 = 0.25; // seconds
@@ -60,32 +63,34 @@ impl Searcher {
         mut alpha: i32,
         mut beta: i32,
     ) -> i32 {
-        // let table = TRANSPOSITION_TABLE.get().unwrap();
-        // let key = TableKey {
-        //     board: *node,
-        //     depth,
-        //     maximizing,
-        // };
-        // if let Some(&cached) = table.get(&key).map(|entry| *entry.value()) && cached.depth >= depth {
-        //     return cached;
-        // }
+        let table = TRANSPOSITION_TABLE.get().unwrap();
+        let key = TTableKey {
+            board: *node,
+            maximizing,
+            player: self.player,
+        };
+        if let Some(cached) = table.get(&key)
+            && let cached = cached.value()
+            && cached.depth >= depth
+        {
+            cached.hits.fetch_add(1, Ordering::Relaxed);
+            return cached.eval;
+        }
 
-        if !node
+        let eval = if !node
             .boards
             .iter()
             .any(|row| row.iter().any(|b| b.can_play()))
         {
-            return 0; // Draw
-        }
-
-        if depth == 0
+            0 // Draw
+        } else if depth == 0
             || node.overall_winner.is_some()
             || std::time::Instant::now()
                 .saturating_duration_since(self.start_time)
                 .as_secs_f64()
                 > MAX_SEARCH_TIME
         {
-            return Self::heuristic(
+            Self::heuristic(
                 node,
                 self.player,
                 if maximizing {
@@ -93,10 +98,8 @@ impl Searcher {
                 } else {
                     !self.player
                 },
-            );
-        }
-
-        if maximizing {
+            )
+        } else if maximizing {
             let mut best_eval = i32::MIN;
 
             for r#move in node.possible_moves(self.player) {
@@ -126,10 +129,27 @@ impl Searcher {
                 }
             }
             best_eval
+        };
+
+        for node in node.all_variations() {
+            table.insert(
+                TTableKey {
+                    board: node,
+                    maximizing,
+                    player: self.player,
+                },
+                TTableValue {
+                    eval,
+                    depth,
+                    hits: AtomicUsize::new(0),
+                },
+            );
         }
+
+        eval
     }
 
-    fn heuristic(board: &OuterBoard, player: Mark, next_mark: Mark) -> i32 {
+    pub fn heuristic(board: &OuterBoard, player: Mark, next_mark: Mark) -> i32 {
         let meta_board = board.meta_board();
 
         // Immediate win/loss
